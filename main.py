@@ -2,143 +2,198 @@ import gymnasium as gym
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+import copy
 
 class MCTSNode:
+    """
+    Stores statistics on edges (s,a):
+      N[a] = visit count
+      W[a] = total return
+      Q(s,a) = W[a] / N[a]
+    """
     def __init__(self, state, parent=None, action_taken=None):
         self.state = np.array(state, dtype=np.float32)
         self.parent = parent
         self.action_taken = action_taken
-        self.children = {}  # action -> child node
-        self.visits = 0
-        self.value = 0.0
 
-    def is_leaf(self):
-        return len(self.children) == 0
+        self.children = {}   # action -> MCTSNode
+        self.N = {}          # action -> visit count
+        self.W = {}          # action -> total return
+        self.is_terminal = False
 
-    def q_value(self):
-        return self.value / self.visits if self.visits > 0 else 0
+    def q_value(self, a):
+        if self.N.get(a, 0) == 0:
+            return 0.0
+        return self.W[a] / self.N[a]
 
-def rollout_from_state(base_state, first_action, max_steps=200):
-    env_sim = gym.make("CartPole-v1")
-    obs, info = env_sim.reset()
-    env_sim.unwrapped.state = np.array(base_state, dtype=np.float32)
+    def is_fully_expanded(self, action_space_n):
+        return len(self.children) == action_space_n
 
-    total_reward = 0.0
-    obs, reward, terminated, truncated, info = env_sim.step(first_action)
-    total_reward += reward
-    done = terminated or truncated
-    steps = 1
 
-    while not done and steps < max_steps:
-        a = random.choice([0, 1])
-        obs, reward, terminated, truncated, info = env_sim.step(a)
-        total_reward += reward
-        done = terminated or truncated
-        steps += 1
+# UCT SELECTION
+def select_uct_action(node, action_space_n, c=1.414):
+    total_N = sum(node.N.values()) + 1
+    best_a, best_score = None, -np.inf
 
-    env_sim.close()
-    return total_reward
+    for a in range(action_space_n):
+        n_sa = node.N.get(a, 0)
+        if n_sa == 0:
+            score = np.inf
+        else:
+            q = node.q_value(a)
+            score = q + c * np.sqrt(np.log(total_N) / n_sa)
 
-# ---------------- MCTS Algorithm ----------------
-def mcts(env, root_state, n_simulations=50, max_rollout_steps=200):
+        if score > best_score:
+            best_score, best_a = score, a
+
+    return best_a
+
+
+# ROLLOUT (SIMULATION)
+def rollout_from_state(env_sim, max_steps=200):
+    total = 0.0
+    for _ in range(max_steps):
+        a = random.randrange(env_sim.action_space.n)
+        _, r, terminated, truncated, _ = env_sim.step(a)
+        total += r
+        if terminated or truncated:
+            break
+    return total
+
+
+# MCTS
+def mcts(env_plan, root_state, n_simulations=2, max_rollout_steps=200):
+    action_space_n = env_plan.action_space.n
     root = MCTSNode(root_state)
 
     for _ in range(n_simulations):
+        env_sim = copy.deepcopy(env_plan)
+        env_sim.unwrapped.state = root_state.copy()
+
         node = root
-        path = [node]
+        path = []
+        done = False
 
-        # --- Selection ---
-        while not node.is_leaf() and node.children:
-            total_visits = sum(c.visits for c in node.children.values()) + 1
-            best_score = -np.inf
-            best_child = None
-            for a, child in node.children.items():
-                if child.visits == 0:
-                    score = np.inf
-                else:
-                    score = child.q_value() + np.sqrt(2 * np.log(total_visits) / child.visits)
-                if score > best_score:
-                    best_score = score
-                    best_child = child
-            node = best_child
-            path.append(node)
+        while True:
+            if node.is_terminal:
+                done = True
+                break
 
-        # --- Expansion ---
-        if node.visits == 0:
-            for action in [0, 1]:
-                if action not in node.children:
-                    node.children[action] = MCTSNode(state=node.state, parent=node, action_taken=action)
+            if not node.is_fully_expanded(action_space_n):
+                untried = [a for a in range(action_space_n) if a not in node.children]
+                a = random.choice(untried)
 
-        # --- Simulation ---
-        first_action = random.choice([0, 1])
-        reward = rollout_from_state(node.state, first_action, max_steps=max_rollout_steps)
+                _, r, terminated, truncated, _ = env_sim.step(a)
+                done = terminated or truncated
 
-        # --- Backpropagation ---
-        for n in path:
-            n.visits += 1
-            n.value += reward
+                child_state = env_sim.unwrapped.state.copy()
+                child = MCTSNode(child_state, parent=node, action_taken=a)
+                child.is_terminal = done
 
-    # Policy at root
-    policy = {action: child.visits / root.visits for action, child in root.children.items()}
+                node.children[a] = child
+                node.N.setdefault(a, 0)
+                node.W.setdefault(a, 0.0)
+
+                path.append((node, a, r))
+                node = child
+                break
+            else:
+                a = select_uct_action(node, action_space_n)
+                _, r, terminated, truncated, _ = env_sim.step(a)
+                done = terminated or truncated
+
+                path.append((node, a, r))
+                node = node.children[a]
+
+                if done:
+                    node.is_terminal = True
+                    break
+
+        rollout_return = 0.0 if done else rollout_from_state(env_sim, max_rollout_steps)
+
+        G = rollout_return
+        for n, a, r in reversed(path):
+            G = r + G
+            n.N[a] += 1
+            n.W[a] += G
+
+    total_visits = sum(root.N.values())
+    policy = {a: root.N.get(a, 0) / total_visits for a in root.N} if total_visits > 0 else {}
+
     return root, policy
 
-# ---------------- Print Tree ----------------
+
 def print_tree(node, depth=0, max_depth=3):
     if depth > max_depth:
         return
+
     indent = "  " * depth
-    print(f"{indent}- Action:{node.action_taken} | Q={node.q_value():.2f}, V={node.visits}")
-    for child in node.children.values():
+    if node.parent is None:
+        print(f"{indent}Root")
+    else:
+        print(f"{indent}Action taken: {node.action_taken}")
+
+    for a, child in node.children.items():
+        q = node.q_value(a)
+        n = node.N.get(a, 0)
+        print(f"{indent}  ├─ a={a} | Q={q:.2f}, N={n}")
         print_tree(child, depth + 1, max_depth)
 
-# ---------------- Tree Visualization (Matplotlib) ----------------
-def visualize_tree_matplotlib(root, max_depth=3):
+def visualize_tree(root, max_depth=3):
     fig, ax = plt.subplots(figsize=(12, 8))
+    positions, labels = {}, {}
 
-    positions = {}
-    labels = {}
-    colors = []
-
-    def add_node(node, x, y, level=0):
+    def traverse(node, x, y, depth):
+        if depth > max_depth:
+            return
         node_id = id(node)
         positions[node_id] = (x, y)
-        labels[node_id] = f"Q:{node.q_value():.1f}\nV:{node.visits}"
-        normalized = min(max(node.q_value() / 50, 0), 1)
-        colors.append((1 - normalized, normalized, 0))  # Red -> Green
 
-        # Draw edges to children
-        if level < max_depth and node.children:
-            n_children = len(node.children)
-            dx = 1 / (n_children + 1)
-            i = 1
-            for child in node.children.values():
-                child_x = x - 0.5 + i * dx
-                child_y = y - 1
-                ax.plot([x, child_x], [y, child_y], 'k-')
-                # Add edge label (action)
-                mid_x = (x + child_x) / 2
-                mid_y = (y + child_y) / 2
-                ax.text(mid_x, mid_y, str(child.action_taken), color='blue', fontsize=12)
-                add_node(child, child_x, child_y, level + 1)
-                i += 1
+        label = []
+        for a in node.children:
+            label.append(f"a={a}: Q={node.q_value(a):.1f}, N={node.N[a]}")
+        labels[node_id] = "\n".join(label) if label else "Leaf"
 
-    add_node(root, 0, 0)
+        dx = 1.0 / (len(node.children) + 1) if node.children else 0
+        for i, child in enumerate(node.children.values(), 1):
+            cx, cy = x - 0.5 + i * dx, y - 1
+            ax.plot([x, cx], [y, cy], 'k-')
+            traverse(child, cx, cy, depth + 1)
 
-    # Draw nodes
-    for node_id, (x, y) in positions.items():
-        ax.scatter(x, y, s=2500, c=[colors[list(positions.keys()).index(node_id)]])
-        ax.text(x, y, labels[node_id], ha='center', va='center', fontsize=10)
+    traverse(root, 0, 0, 0)
 
-    ax.axis('off')
+    for nid, (x, y) in positions.items():
+        ax.scatter(x, y, s=2200, color="lightblue")
+        ax.text(x, y, labels[nid], ha="center", va="center")
+
+    ax.axis("off")
     plt.show()
+
 
 if __name__ == "__main__":
     env = gym.make("CartPole-v1")
     obs, info = env.reset()
-    root_node, policy = mcts(env, env.unwrapped.state, n_simulations=50)
 
-    print("Policy at root:", policy)
-    print("\nMCTS Tree Values:")
-    print_tree(root_node, max_depth=3)
+    done = False
+    episode_return = 0.0
+    last_root = None
 
-    visualize_tree_matplotlib(root_node, max_depth=3)
+    while not done:
+        env_plan = gym.make("CartPole-v1")
+        env_plan.reset()
+        env_plan.unwrapped.state = env.unwrapped.state.copy()
+
+        last_root, policy = mcts(env_plan, env.unwrapped.state.copy(), n_simulations=5)
+        action = max(policy, key=policy.get)
+
+        obs, reward, terminated, truncated, _ = env.step(action)
+        episode_return += reward
+        done = terminated or truncated
+        print_tree(last_root)
+
+    print("\nEpisode return:", episode_return)
+    print("\nMCTS Tree (Root):")
+    # print_tree(last_root, max_depth=3)
+    # visualize_tree(last_root, max_depth=3)
+
+    env.close()
