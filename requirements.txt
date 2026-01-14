@@ -1,0 +1,10 @@
+jax==0.8.2
+jaxlib==0.8.2
+flax
+gymnax
+networkx
+matplotlib
+numpy
+scipy
+optax
+chex
