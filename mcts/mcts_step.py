@@ -28,17 +28,20 @@ def mcts_step(rollout_fn):
 
         # Precompute new child indices for each simulation (deterministic)
         child_offset = jnp.arange(NUM_ACTIONS, dtype=jnp.int32)  # [0,1,...]
-        # For each sim_node_idx, assign static child IDs
-        new_children = sim_node_idx[:, None] * NUM_ACTIONS + child_offset  # [BATCH_SIZE, NUM_ACTIONS]
+        leaf_mask = tree["is_leaf"][sim_node_idx]  # [BATCH_SIZE]
 
-        # Only update children where leaf
-        current_children = tree["children"][sim_node_idx]
-        tree["children"] = tree["children"].at[sim_node_idx].set(
-            jnp.where(leaf_mask[:, None], new_children, current_children)
-        )
+        # Allocate unique new nodes for each leaf
+        start_id = tree["next_node_id"]
+        new_children = jnp.arange(NUM_ACTIONS) + start_id
 
-        # Mark new children as leaves
-        tree["is_leaf"] = tree["is_leaf"].at[new_children.flatten()].set(True)
+
+        # Update the tree
+        tree["children"] = tree["children"].at[sim_node_idx].set(new_children)
+        tree["is_leaf"] = tree["is_leaf"].at[new_children].set(True)
+
+        # Increment next_node_id
+        tree["next_node_id"] = start_id + NUM_ACTIONS
+
 
         # -------------------------
         # Rollout
@@ -59,7 +62,7 @@ def mcts_step(rollout_fn):
         # -------------------------
         # Move simulation to child
         # -------------------------
-        sim_node_idx = tree["children"][sim_node_idx, actions]
+        # sim_node_idx = tree["children"][sim_node_idx, actions]
 
         return (tree, sim_node_idx, state_batch, rng_key), None
 
