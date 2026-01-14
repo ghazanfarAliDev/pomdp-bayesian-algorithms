@@ -16,17 +16,16 @@ Key features:
 ## Project Structure
 
 pomdp-bayesian-algorithms/
-│
-├─ main.py # Entry point for running the MCTS experiment
-├─ config.py # Hyperparameters like RNG seed, batch size, max simulations
-├─ envs/
-│ └─ cartpole_env.py # CartPole environment wrapper using Gymnax
-├─ mcts/
-│ ├─ tree.py # Tree initialization
-│ ├─ rollout.py # Rollout function
-│ └─ mcts_step.py # Single MCTS step (selection, expansion, rollout, backprop)
-├─ visualize_tree.py # Optional tree visualization using NetworkX and matplotlib
-└─ requirements.txt # Python dependencies
+    - main.py # Entry point for running the MCTS experiment 
+    -config.py # Hyperparameters like RNG seed, batch size, max simulations
+envs/
+    - cartpole_env.py # CartPole environment wrapper using Gymnax
+mcts/
+    - tree.py # Tree initialization
+    - rollout.py # Rollout function
+    - mcts_step.py # Single MCTS step (selection, expansion, rollout, backprop)
+    - visualize_tree.py # Optional tree visualization using NetworkX and matplotlib
+    - requirements.txt # Python dependencies
 
 ## Installation Instructions
 
