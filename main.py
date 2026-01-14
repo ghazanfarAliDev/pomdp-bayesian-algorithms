@@ -1,38 +1,82 @@
 import time
-import gymnasium as gym
-from mcts_node import MCTSNode
-from mcts_utils import mcts, print_tree
+import jax
+import jax.numpy as jnp
+import jax.random as random
 
-env = gym.make("CartPole-v1", render_mode="rgb_array")
-obs, info = env.reset(seed=42)
+from config import (
+    RNG_SEED,
+    BATCH_SIZE,
+    MAX_SIMULATIONS,
+)
 
-done = False
-episode_return = 0.0
-last_root = None
+from envs.cartpole_env import make_env, reset_env_batch
+from mcts.tree import init_tree
+from mcts.rollout import make_rollout
+from mcts.mcts_step import mcts_step
+from visualize_tree import visualize_tree
 
-start_episode = time.time()
 
-while not done:
-    env_plan = gym.make("CartPole-v1")
-    obs_plan, _ = env_plan.reset(seed=42)
-    root_state = obs if obs is not None else obs_plan  # use observation as root state
+def main():
+    # -------------------------
+    # RNG
+    # -------------------------
+    rng_key = random.PRNGKey(RNG_SEED)
 
-    last_root, policy = mcts(env_plan, root_state, n_simulations=2000)
+    # -------------------------
+    # Environment
+    # -------------------------
+    env, env_params = make_env()
+    _, state_batch = reset_env_batch(env, env_params, rng_key)
 
-    if not policy:
-        action = env.action_space.sample()  # fallback if policy is empty
-    else:
-        action = max(policy, key=policy.get)
+    # -------------------------
+    # MCTS components
+    # -------------------------
+    rollout_fn = make_rollout(env, env_params)
+    step_fn = mcts_step(rollout_fn)
 
-    obs, reward, terminated, truncated, _ = env.step(action)
-    episode_return += reward
-    done = terminated or truncated
-end_episode = time.time()
+    # -------------------------
+    # Initial tree + sim state
+    # -------------------------
+    tree = init_tree()
+    sim_node_idx = jnp.zeros((BATCH_SIZE,), dtype=jnp.int32)
 
-print(f"\nEpisode return: {episode_return}")
-print(f"Total episode took {end_episode - start_episode:.4f} seconds")
+    carry = (tree, sim_node_idx, state_batch, rng_key)
 
-# print("\nMCTS Tree (Root):")
-# print_tree(last_root, max_depth=2)
+    # -------------------------
+    # Warm-up (JIT compile)
+    # -------------------------
+    print("Running JIT warm-up...")
+    carry, _ = jax.lax.scan(step_fn, carry, None, length=10)
+    jax.block_until_ready(carry)
 
-env.close()
+    # -------------------------
+    # Timed MCTS run
+    # -------------------------
+    print(f"Running {MAX_SIMULATIONS} MCTS simulations...")
+    start = time.time()
+
+    carry, _ = jax.lax.scan(step_fn, carry, None, length=MAX_SIMULATIONS)
+    jax.block_until_ready(carry)
+
+    end = time.time()
+
+    # -------------------------
+    # Results
+    # -------------------------
+    tree, _, _, _ = carry
+    root_visits = tree["N"][0]
+    policy = root_visits / (root_visits.sum() + 1e-8)
+
+    print("Root policy:", policy)
+    print(f"Total time: {end - start:.4f}s")
+    print(f"Time per simulation: {(end - start) / MAX_SIMULATIONS:.6f}s")
+
+    # -------------------------
+    # Tree Visualization
+    # -------------------------
+    print("Visualizing MCTS tree...")
+    visualize_tree(tree, max_nodes=2)
+
+
+if __name__ == "__main__":
+    main()

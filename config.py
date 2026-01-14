@@ -1,0 +1,15 @@
+import jax.random as random
+
+# Environment
+ENV_NAME = "CartPole-v1"
+NUM_ACTIONS = 2
+
+# MCTS
+BATCH_SIZE = 16
+MAX_NODES = 1024
+MAX_SIMULATIONS = 50000
+MAX_ROLLOUT_STEPS = 50
+UCT_C = 1.414
+
+# RNG
+RNG_SEED = 0
