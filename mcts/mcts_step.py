@@ -1,49 +1,54 @@
 import jax
 import jax.numpy as jnp
 import jax.random as random
-
-from config import BATCH_SIZE, MAX_NODES
+from config import NUM_ACTIONS, MAX_NODES, UCT_C
 from mcts.uct import select_uct
-
 
 def mcts_step(rollout_fn):
     """
-    Returns a JAX-compatible MCTS step function for lax.scan
+    Fully JAX-compatible MCTS step with:
+    - batched simulations
+    - deterministic preallocated tree expansion
+    - JIT-friendly, no dynamic Python operations
     """
-
     def _step(carry, _):
         tree, sim_node_idx, state_batch, rng_key = carry
+        batch_size = sim_node_idx.shape[0]
 
         # -------------------------
         # Selection
         # -------------------------
-        actions = select_uct(tree["N"], tree["W"], sim_node_idx)
+        rng_key, subkey = random.split(rng_key)
+        actions = select_uct(tree["N"], tree["W"], sim_node_idx, subkey)
 
         # -------------------------
-        # Expansion
+        # Expansion: deterministic preallocated children
         # -------------------------
-        leaf_mask = tree["is_leaf"][sim_node_idx]
+        leaf_mask = tree["is_leaf"][sim_node_idx]  # [BATCH_SIZE]
 
-        # Allocate new nodes safely
-        next_node_id = tree["next_node_id"]
-        new_nodes = next_node_id + jnp.arange(BATCH_SIZE)
-        tree["next_node_id"] += BATCH_SIZE
+        # Precompute new child indices for each simulation (deterministic)
+        child_offset = jnp.arange(NUM_ACTIONS, dtype=jnp.int32)  # [0,1,...]
+        # For each sim_node_idx, assign static child IDs
+        new_children = sim_node_idx[:, None] * NUM_ACTIONS + child_offset  # [BATCH_SIZE, NUM_ACTIONS]
 
-        # Update children and leaves
+        # Only update children where leaf
+        current_children = tree["children"][sim_node_idx]
         tree["children"] = tree["children"].at[sim_node_idx].set(
-            jnp.where(
-                leaf_mask[:, None],
-                new_nodes[:, None],
-                tree["children"][sim_node_idx]
-            )
+            jnp.where(leaf_mask[:, None], new_children, current_children)
         )
-        tree["is_leaf"] = tree["is_leaf"].at[new_nodes].set(True)
+
+        # Mark new children as leaves
+        tree["is_leaf"] = tree["is_leaf"].at[new_children.flatten()].set(True)
 
         # -------------------------
         # Rollout
         # -------------------------
         rng_key, subkey = random.split(rng_key)
         rewards = rollout_fn(state_batch, subkey)
+
+        # Tiny noise to break ties
+        rng_key, subkey = random.split(rng_key)
+        rewards += 1e-3 * random.uniform(subkey, rewards.shape)
 
         # -------------------------
         # Backpropagation
@@ -54,11 +59,7 @@ def mcts_step(rollout_fn):
         # -------------------------
         # Move simulation to child
         # -------------------------
-        sim_node_idx = jnp.where(
-            leaf_mask,
-            new_nodes,
-            tree["children"][sim_node_idx, actions]
-        )
+        sim_node_idx = tree["children"][sim_node_idx, actions]
 
         return (tree, sim_node_idx, state_batch, rng_key), None
 

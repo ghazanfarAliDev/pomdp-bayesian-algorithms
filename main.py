@@ -80,7 +80,7 @@ def main():
     # Tree Visualization
     # -------------------------
     print("Visualizing MCTS tree...")
-    visualize_tree(tree, max_nodes=1000)
+    visualize_tree(tree, max_nodes=50)
 
 
 if __name__ == "__main__":
